@@ -72,25 +72,137 @@
   // Map
   const map = (window.ryokanMap = L.map("map", { zoomControl: false, maxZoom: 19 }).setView([36.3, 138.6], 7));
   L.control.zoom({ position: "bottomright" }).addTo(map);
-  // Base maps. Default: OpenFreeMap vector tiles rendered by MapLibre GL, with labels switched to English.
-  // Raster alternates: tile.openstreetmap.org refuses requests without a Referer (what a file:// page sends),
-  // so from disk the raster fallback is the OSM France-hosted Humanitarian (HOT) style.
+  // Base maps. Default: OpenTopoMap (raster, local-language labels). "Topo": GSI's English topographic tiles (Japan, zoom 5-11), handing over to the
+  // OpenFreeMap vector map (MapLibre GL, labels switched to English) outside that zoom range.
+  // tile.openstreetmap.org refuses requests without a Referer (what a file:// page sends), so from disk the
+  // raster fallback for the vector map is the OSM France-hosted Humanitarian (HOT) style.
   const OSM_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
   const OFM_STYLE = "https://tiles.openfreemap.org/styles/liberty";
   const EN_NAME = ["coalesce", ["get", "name:en"], ["get", "name_en"], ["get", "name:latin"], ["get", "name"]];
+  const GSI_MIN = 5, GSI_MAX = 11;
+  const gsi = L.tileLayer("https://cyberjapandata.gsi.go.jp/xyz/english/{z}/{x}/{y}.png", {
+    minNativeZoom: GSI_MIN, maxNativeZoom: GSI_MAX, maxZoom: 19, bounds: [[20, 122], [46.5, 154]],
+    attribution: '<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank">GSI Tiles (地理院タイル)</a>' });
   const rasters = {
-    OpenStreetMap: L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: OSM_ATTR }),
-    "OpenStreetMap HOT": L.tileLayer("https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png", { maxZoom: 19, subdomains: "abc",
+    otm: L.tileLayer("https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png", { subdomains: "abc", maxNativeZoom: 17, maxZoom: 19,
+      attribution: 'Map data: &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, ' +
+        '<a href="http://viewfinderpanoramas.org">SRTM</a> | Map style: &copy; <a href="https://opentopomap.org">OpenTopoMap</a> ' +
+        '(<a href="https://creativecommons.org/licenses/by-sa/3.0/">CC-BY-SA</a>)' }),
+    osm: L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: OSM_ATTR }),
+    hot: L.tileLayer("https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png", { maxZoom: 19, subdomains: "abc",
       attribution: `${OSM_ATTR}, tiles style by <a href="https://www.hotosm.org/">HOT</a> hosted by <a href="https://openstreetmap.fr/">OSM France</a>` }),
   };
-  const fallbackRaster = rasters[location.protocol === "file:" ? "OpenStreetMap HOT" : "OpenStreetMap"];
-  const webgl = (() => { try { const c = document.createElement("canvas"); return !!(c.getContext("webgl2") || c.getContext("webgl")); } catch { return false; } })();
-  const useRaster = (why) => {
+  const fallbackRaster = rasters[location.protocol === "file:" ? "hot" : "osm"];
+  const BASES = [["otm", "OpenTopoMap"], ["topo", "Topo (GSI English)"], ["vector", "English (vector)"], ["osm", "OpenStreetMap"],
+    ["hot", "OpenStreetMap HOT"], ["gsi", `GSI English (z${GSI_MIN}-${GSI_MAX} only)`]];
+  const DEFAULT_BASE = "otm";
+  // The layer switcher only holds empty marker layers; syncBase() decides which real layer is shown.
+  const baseTokens = Object.fromEntries(BASES.map(([k]) => [k, Object.assign(L.layerGroup(), { baseKey: k })]));
+  L.control.layers(Object.fromEntries(BASES.map(([k, label]) => [label, baseTokens[k]])), null, { position: "bottomright" }).addTo(map);
+  let baseKey = DEFAULT_BASE, shownBase = null, vector = null, vectorState = "pending", vectorOk = false, vectorWatch = 0;
+  baseTokens[baseKey].addTo(map);
+
+  // The vector map, or the raster fallback once it has failed; null while the style is still loading.
+  const closeUp = () => (vectorState === "ready" ? vector : vectorState === "failed" ? fallbackRaster : null);
+  function wantedBase() {
+    const z = map.getZoom();
+    if (baseKey === "topo") return z >= GSI_MIN && z <= GSI_MAX ? gsi : closeUp();
+    if (baseKey === "vector") return closeUp();
+    if (baseKey === "otm" && otmFailed) return fallbackRaster;
+    return baseKey === "gsi" ? gsi : rasters[baseKey];
+  }
+  // OpenTopoMap is a small volunteer server: if its tiles keep failing before any has loaded, use the OSM fallback.
+  let otmFailed = false, otmErrors = 0, otmLoaded = false;
+  rasters.otm.on("tileload", () => { otmLoaded = true; });
+  rasters.otm.on("tileerror", () => {
+    if (otmLoaded || otmFailed || ++otmErrors < 8) return;
+    otmFailed = true;
+    console.warn("OpenTopoMap tiles failed to load; using OpenStreetMap tiles instead.");
+    syncBase();
+  });
+  // Calls `cb` once `layer` has drawn. The vector map waits for MapLibre's "idle" with at least one tile loaded
+  // (if that never happens, watchVector gives up on it); tile layers also give up after a few seconds.
+  function whenDrawn(layer, cb) {
+    let done = false;
+    const once = () => { if (!done) { done = true; cb(); } };
+    if (layer === vector) {
+      const gl = vector.getMaplibreMap();
+      const check = () => { if (vectorOk) once(); else if (vectorState === "ready" && map.hasLayer(vector)) gl.once("idle", check); };
+      if (vectorOk && gl.loaded()) once(); else gl.once("idle", check);
+      return;
+    }
+    setTimeout(once, 4000);
+    if (!layer.isLoading()) once(); else layer.once("load", once);
+  }
+  // Show the wanted base layer. The previous ones stay underneath until the new one has drawn, so switching
+  // between GSI and vector at the zoom boundary doesn't flash an empty map.
+  const allBases = () => [gsi, vector, ...Object.values(rasters)].filter(Boolean);
+  function syncBase() {
+    const want = wantedBase();
+    if (!want || want === shownBase) return;
+    shownBase = want;
+    map.addLayer(want);
+    if (want === vector) watchVector();
+    whenDrawn(want, () => {
+      if (shownBase === want) for (const l of allBases()) if (l !== want && map.hasLayer(l)) map.removeLayer(l);
+    });
+  }
+  function setBase(key) {
+    if (!baseTokens[key] || key === baseKey) return;
+    map.removeLayer(baseTokens[baseKey]);
+    baseKey = key;
+    baseTokens[key].addTo(map);
+    syncBase();
+  }
+  function vectorFailed(why) {
     console.warn(`English vector map unavailable (${why}); using raster tiles with local-language labels.`);
-    L.control.layers(rasters, null, { position: "bottomright" }).addTo(map);
-    fallbackRaster.addTo(map);
-  };
-  if (!webgl || typeof L.maplibreGL !== "function") useRaster(webgl ? "MapLibre not loaded" : "no WebGL");
+    vectorState = "failed";
+    if (vector && map.hasLayer(vector)) map.removeLayer(vector);
+    if (shownBase === vector) shownBase = null;
+    syncBase();
+  }
+  // Give up on the vector map if no tile has loaded after 3 errors or 10 s of the page being visible (blocked
+  // tiles, GL failure). Hidden tabs don't render, so time spent hidden doesn't count.
+  function watchVector() {
+    if (vectorOk || vectorWatch) return;
+    const gl = vector.getMaplibreMap();
+    let errors = 0, visibleMs = 0;
+    gl.on("data", (e) => { if (e.dataType === "source" && e.tile) vectorOk = true; });
+    gl.on("error", () => { errors++; });
+    vectorWatch = setInterval(() => {
+      if (vectorOk || !map.hasLayer(vector)) { clearInterval(vectorWatch); vectorWatch = 0; return; }
+      if (document.visibilityState === "visible") visibleMs += 500;
+      if (errors < 3 && visibleMs < 10000) return;
+      clearInterval(vectorWatch); vectorWatch = 0;
+      vectorFailed(errors ? "tiles failed to load" : "did not load");
+    }, 500);
+  }
+  map.on("baselayerchange", (e) => {
+    if (!e.layer.baseKey || e.layer.baseKey === baseKey) return;
+    baseKey = e.layer.baseKey;
+    syncBase();
+    scheduleHash();
+  });
+  map.on("zoomend", syncBase);
+  syncBase();
+
+  // maplibre-gl-leaflet 0.1.4 finishes a zoom in a requestAnimationFrame callback that throws if the layer was
+  // removed in the meantime, which the GSI/vector handover does at zoomend. Same code, with a guard.
+  const SafeMaplibreGL = L.MaplibreGL ? L.MaplibreGL.extend({
+    _transitionEnd() {
+      L.Util.requestAnimFrame(function () {
+        if (!this._map || !this._glMap) return;
+        const zoom = this._map.getZoom(), center = this._map.getCenter();
+        const offset = this._map.latLngToContainerPoint(this._map.getBounds().getNorthWest());
+        this._resizeContainer();
+        L.DomUtil.setTransform(this._glMap._actualCanvas, offset, 1);
+        this._glMap.once("moveend", () => { if (this._map) this._zoomEnd(); });
+        this._glMap.jumpTo({ center, zoom: zoom - 1 });
+      }, this);
+    },
+  }) : null;
+  const webgl = (() => { try { const c = document.createElement("canvas"); return !!(c.getContext("webgl2") || c.getContext("webgl")); } catch { return false; } })();
+  if (!webgl || !SafeMaplibreGL) vectorFailed(webgl ? "MapLibre not loaded" : "no WebGL");
   else {
     const ctl = new AbortController();
     const abort = setTimeout(() => ctl.abort(), 8000);
@@ -114,27 +226,15 @@
           paint: { "text-color": "#6b4f2a", "text-halo-color": "#fff", "text-halo-width": 1.2 },
         });
         style.layers.splice(at < 0 ? style.layers.length : at, 0, peaks("peak_major", 6, 10, 1), peaks("peak_all", 10, 24, 99));
-        const vector = L.maplibreGL({ style, attribution: `<a href="https://openfreemap.org" target="_blank">OpenFreeMap</a> ` +
-          `<a href="https://www.openmaptiles.org/" target="_blank">&copy; OpenMapTiles</a> ${OSM_ATTR}` });
-        L.control.layers({ "English (vector)": vector, ...rasters }, null, { position: "bottomright" }).addTo(map);
-        vector.addTo(map);
-        // If the vector map has not loaded after 10 s of the page being visible (blocked tiles, GL failure),
-        // swap in the raster fallback. Hidden tabs don't render, so time spent hidden doesn't count.
-        const gl = vector.getMaplibreMap();
-        let ok = false, visibleMs = 0;
-        gl.once("load", () => { ok = true; });
-        gl.on("error", (e) => console.warn("Vector map:", e && e.error ? e.error.message : e));
-        const watch = setInterval(() => {
-          if (ok || !map.hasLayer(vector)) { clearInterval(watch); return; }
-          if (document.visibilityState === "visible") visibleMs += 500;
-          if (visibleMs < 10000) return;
-          clearInterval(watch);
-          console.warn("English vector map did not load; switching to raster tiles.");
-          map.removeLayer(vector);
-          fallbackRaster.addTo(map);
-        }, 500);
+        // A fixed attribution (customAttribution) so it is removed cleanly when the layer is swapped out;
+        // otherwise the plugin re-adds the style's own attribution on load and it stays behind.
+        vector = new SafeMaplibreGL({ style, attributionControl: { customAttribution: `<a href="https://openfreemap.org" target="_blank">OpenFreeMap</a> ` +
+          `<a href="https://www.openmaptiles.org/" target="_blank">&copy; OpenMapTiles</a> ${OSM_ATTR}` } });
+        vector.on("add", () => vector.getMaplibreMap().on("error", (e) => console.warn("Vector map:", e && e.error ? e.error.message : e)));
+        vectorState = "ready";
+        syncBase();
       })
-      .catch((e) => { clearTimeout(abort); useRaster(e.message || String(e)); });
+      .catch((e) => { clearTimeout(abort); vectorFailed(e.message || String(e)); });
   }
   const clusters = L.markerClusterGroup({
     maxClusterRadius: 48, showCoverageOnHover: false, spiderfyOnMaxZoom: true, disableClusteringAtZoom: 14,
@@ -425,6 +525,7 @@
     if (state.pref) parts.push(`pref=${encodeURIComponent(state.pref)}`);
     if (state.q) parts.push(`q=${encodeURIComponent(state.q)}`);
     if (state.colorBy !== DEFAULTS.colorBy) parts.push(`color=${state.colorBy}`);
+    if (baseKey !== DEFAULT_BASE) parts.push(`base=${baseKey}`);
     return parts.join("&");
   }
   function writeHash(push) {
@@ -462,6 +563,7 @@
     if (P.get("color") === "price") s.colorBy = "price";
     writeControls(s);
     readControls();
+    setBase(baseTokens[P.get("base")] ? P.get("base") : DEFAULT_BASE);
     const r = DATA.find((x) => x.id === P.get("r") && x.lat != null);
     activeId = r ? r.id : null;
     apply();
