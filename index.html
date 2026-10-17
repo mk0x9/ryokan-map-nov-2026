@@ -6,6 +6,7 @@
 <title>Onsen ryokan shortlist · Nov 16-19 2026</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
 <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" crossorigin="">
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css" crossorigin="">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -42,7 +43,7 @@
     </div>
     <input id="q" type="search" placeholder="Search name or area">
     <div id="legend" class="legend"></div>
-    <button id="reset" class="link-btn">Reset filters</button>
+    <div class="actions"><button id="reset" class="link-btn">Reset filters</button><button class="link-btn" data-copy>Copy link</button></div>
   </div>
 </aside>
 
@@ -52,8 +53,18 @@
   <div id="panel-body"></div>
 </aside>
 
+<div id="lightbox" class="lb" hidden role="dialog" aria-modal="true" aria-label="Photo gallery">
+  <div class="lb-top"><span id="lb-title"></span><button class="lb-btn" data-lb="close" title="Close (Esc)">×</button></div>
+  <button class="lb-btn lb-nav prev" data-lb="prev" title="Previous (←)">‹</button>
+  <div class="lb-stage"><img id="lb-img" alt=""></div>
+  <button class="lb-btn lb-nav next" data-lb="next" title="Next (→)">›</button>
+  <div class="lb-bottom"><span id="lb-cap"></span><span id="lb-count"></span></div>
+</div>
+
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js" crossorigin=""></script>
+<script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js" crossorigin=""></script>
+<script src="https://unpkg.com/@maplibre/maplibre-gl-leaflet@0.1.4/leaflet-maplibre-gl.js" crossorigin=""></script>
 <script src="data.js"></script>
 <script src="app.js"></script>
 </body>

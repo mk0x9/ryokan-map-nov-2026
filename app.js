@@ -15,8 +15,12 @@
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const yen = (v) => (v == null ? "—" : "¥" + Math.round(v).toLocaleString("en-US"));
   const yenK = (v) => "¥" + Math.round(v / 1000) + "k";
-  // Jalan serves the same photo at several widths: pictL 300px, pict2L 600px, pict4L 1200px (what data.js stores).
-  const photo = (u, size = "pictL") => (/^https?:/.test(u) ? u : IMG_BASE + u.replace(/^pict4L\//, size + "/"));
+  // Jalan serves the same photo at several widths: pictL 300px, pict2L 600px, pict4L 1200px.
+  // data.js stores ryokan photos as pict4L/... and plan room photos as pictL/...
+  const SIZE_RE = /^pict\d?L\//;
+  const photo = (u, size = "pictL") => (/^https?:/.test(u) ? u : IMG_BASE + u.replace(SIZE_RE, size + "/"));
+  const photoKey = (u) => u.replace(SIZE_RE, "");
+  const thumb = (r, u, size) => `<img loading="lazy" src="${esc(photo(u, size))}" alt="" data-rid="${esc(r.id)}" data-ph="${esc(photoKey(u))}">`;
   const jalanUrl = (r) => `https://www.jalan.net/yad${r.id}/`;
   const bookUrl = (r, p) => `https://www.jalan.net/uw/uwp3200/uww3201init.do?yadNo=${r.id}&planCd=${p.planCd}&roomTypeCd=${p.roomCd}` +
     "&calYear=2026&calMonth=11&dateUndecided=1&roomCount=1&adultNum=2#price_cal";
@@ -66,18 +70,72 @@
     ? BANDS.find(([max]) => price <= max)[1] : (SETTING[r.setting] || SETTING.Town).color);
 
   // Map
-  const map = (window.ryokanMap = L.map("map", { zoomControl: false }).setView([36.3, 138.6], 7));
+  const map = (window.ryokanMap = L.map("map", { zoomControl: false, maxZoom: 19 }).setView([36.3, 138.6], 7));
   L.control.zoom({ position: "bottomright" }).addTo(map);
-  // tile.openstreetmap.org refuses requests without a Referer, which is what a file:// page sends,
-  // so from disk the default is the OSM France-hosted Humanitarian (HOT) style; standard OSM stays one click away.
+  // Base maps. Default: OpenFreeMap vector tiles rendered by MapLibre GL, with labels switched to English.
+  // Raster alternates: tile.openstreetmap.org refuses requests without a Referer (what a file:// page sends),
+  // so from disk the raster fallback is the OSM France-hosted Humanitarian (HOT) style.
   const OSM_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
-  const bases = {
+  const OFM_STYLE = "https://tiles.openfreemap.org/styles/liberty";
+  const EN_NAME = ["coalesce", ["get", "name:en"], ["get", "name_en"], ["get", "name:latin"], ["get", "name"]];
+  const rasters = {
     OpenStreetMap: L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: OSM_ATTR }),
     "OpenStreetMap HOT": L.tileLayer("https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png", { maxZoom: 19, subdomains: "abc",
       attribution: `${OSM_ATTR}, tiles style by <a href="https://www.hotosm.org/">HOT</a> hosted by <a href="https://openstreetmap.fr/">OSM France</a>` }),
   };
-  bases[location.protocol === "file:" ? "OpenStreetMap HOT" : "OpenStreetMap"].addTo(map);
-  L.control.layers(bases, null, { position: "bottomright" }).addTo(map);
+  const fallbackRaster = rasters[location.protocol === "file:" ? "OpenStreetMap HOT" : "OpenStreetMap"];
+  const webgl = (() => { try { const c = document.createElement("canvas"); return !!(c.getContext("webgl2") || c.getContext("webgl")); } catch { return false; } })();
+  const useRaster = (why) => {
+    console.warn(`English vector map unavailable (${why}); using raster tiles with local-language labels.`);
+    L.control.layers(rasters, null, { position: "bottomright" }).addTo(map);
+    fallbackRaster.addTo(map);
+  };
+  if (!webgl || typeof L.maplibreGL !== "function") useRaster(webgl ? "MapLibre not loaded" : "no WebGL");
+  else {
+    const ctl = new AbortController();
+    const abort = setTimeout(() => ctl.abort(), 8000);
+    fetch(OFM_STYLE, { signal: ctl.signal }).then((res) => { if (!res.ok) throw new Error(`style HTTP ${res.status}`); return res.json(); })
+      .then((style) => {
+        clearTimeout(abort);
+        for (const l of style.layers) {
+          if (l.type === "symbol" && l.layout && JSON.stringify(l.layout["text-field"] || "").includes('"name')) l.layout["text-field"] = EN_NAME;
+        }
+        // Liberty draws no mountain names; add peaks (with elevation) below the place labels:
+        // only each tile's top-ranked peaks when zoomed out, all of them from (GL) zoom 10.
+        const at = style.layers.findIndex((l) => l.id === "label_other");
+        const peaks = (id, minzoom, maxzoom, rankMax) => ({
+          id, type: "symbol", source: "openmaptiles", "source-layer": "mountain_peak", minzoom, maxzoom,
+          filter: ["all", ["has", "name"], ["in", ["get", "class"], ["literal", ["peak", "volcano"]]], ["<=", ["coalesce", ["get", "rank"], 99], rankMax]],
+          layout: {
+            "icon-image": ["match", ["get", "class"], "volcano", "volcano_11", "mountain_11"], "icon-size": 0.8,
+            "text-field": ["concat", EN_NAME, ["case", ["has", "ele"], ["concat", "\n", ["to-string", ["get", "ele"]], " m"], ""]],
+            "text-font": ["Noto Sans Italic"], "text-size": 11, "text-anchor": "top", "text-offset": [0, 0.7],
+          },
+          paint: { "text-color": "#6b4f2a", "text-halo-color": "#fff", "text-halo-width": 1.2 },
+        });
+        style.layers.splice(at < 0 ? style.layers.length : at, 0, peaks("peak_major", 6, 10, 1), peaks("peak_all", 10, 24, 99));
+        const vector = L.maplibreGL({ style, attribution: `<a href="https://openfreemap.org" target="_blank">OpenFreeMap</a> ` +
+          `<a href="https://www.openmaptiles.org/" target="_blank">&copy; OpenMapTiles</a> ${OSM_ATTR}` });
+        L.control.layers({ "English (vector)": vector, ...rasters }, null, { position: "bottomright" }).addTo(map);
+        vector.addTo(map);
+        // If the vector map has not loaded after 10 s of the page being visible (blocked tiles, GL failure),
+        // swap in the raster fallback. Hidden tabs don't render, so time spent hidden doesn't count.
+        const gl = vector.getMaplibreMap();
+        let ok = false, visibleMs = 0;
+        gl.once("load", () => { ok = true; });
+        gl.on("error", (e) => console.warn("Vector map:", e && e.error ? e.error.message : e));
+        const watch = setInterval(() => {
+          if (ok || !map.hasLayer(vector)) { clearInterval(watch); return; }
+          if (document.visibilityState === "visible") visibleMs += 500;
+          if (visibleMs < 10000) return;
+          clearInterval(watch);
+          console.warn("English vector map did not load; switching to raster tiles.");
+          map.removeLayer(vector);
+          fallbackRaster.addTo(map);
+        }, 500);
+      })
+      .catch((e) => { clearTimeout(abort); useRaster(e.message || String(e)); });
+  }
   const clusters = L.markerClusterGroup({
     maxClusterRadius: 48, showCoverageOnHover: false, spiderfyOnMaxZoom: true, disableClusteringAtZoom: 14,
     iconCreateFunction(c) {
@@ -97,31 +155,36 @@
       m.on("click", () => showCard(r, m, true));
     } else {
       m.on("mouseover", () => showCard(r, m, false));
-      m.on("mouseout", hideCard);
+      m.on("mouseout", () => hideCard(300));
       m.on("click", () => { hideCard(); openPanel(r); });
     }
     return m;
   });
 
   let activeId = null;
-  function pinIcon(r, price) {
-    const label = `${yenK(price)}${r.rating ? ` <span class="r">· ${r.rating.toFixed(1)}</span>` : ""}`;
-    const color = pinColor(r, price);
+  // `forced`: the open property is shown (greyed) even when the filters exclude it, e.g. from a shared link.
+  function pinIcon(r, price, forced) {
+    const label = `${price != null ? yenK(price) : "—"}${r.rating ? ` <span class="r">· ${r.rating.toFixed(1)}</span>` : ""}`;
+    const color = forced ? "#6b7280" : pinColor(r, price);
     return L.divIcon({ className: "pin-wrap", iconSize: [0, 0], iconAnchor: [0, 0],
-      html: `<div class="pin${r.id === activeId ? " active" : ""}" style="background:${color};border-top-color:${color}">${label}</div>` });
+      html: `<div class="pin${r.id === activeId ? " active" : ""}${forced ? " forced" : ""}" style="background:${color};border-top-color:${color}">${label}</div>` });
   }
+  const matchesFilters = (r) => passes(r) && qualifyingPlans(r).length > 0;
+  const anyPrice = (r) => { const v = (r.plans || []).flatMap((p) => p.avg).filter((x) => x != null); return v.length ? Math.min(...v) : null; };
 
   function apply() {
     const visible = [];
+    let n = 0;
     for (const m of markers) {
       const r = m.ryokan;
       const q = passes(r) ? qualifyingPlans(r) : [];
       m.options.price = q.length ? q[0].price : null;
-      if (q.length) { m.setIcon(pinIcon(r, q[0].price)); visible.push(m); }
+      if (q.length) { m.setIcon(pinIcon(r, q[0].price)); visible.push(m); n++; }
+      else if (r.id === activeId) { m.setIcon(pinIcon(r, anyPrice(r), true)); visible.push(m); }
     }
     clusters.clearLayers();
     clusters.addLayers(visible);
-    $("count").textContent = visible.length;
+    $("count").textContent = n;
     renderLegend();
     if (activeId) { const r = DATA.find((x) => x.id === activeId); if (r) renderPanel(r); }
   }
@@ -132,7 +195,7 @@
   function photosHtml(r, max) {
     const ph = ["main", "bath", "room", "food"].map((k) => r.photos && r.photos[k]).filter(Boolean).slice(0, max);
     return ph.length ? `<div class="photos" style="grid-template-columns:repeat(${ph.length},1fr)">${
-      ph.map((u) => `<img loading="lazy" src="${esc(photo(u))}" alt="">`).join("")}</div>` : "";
+      ph.map((u) => thumb(r, u)).join("")}</div>` : "";
   }
   function scoresHtml(r) {
     const s = SCORES.filter(([k]) => r.scores && r.scores[k] != null).map(([k, l]) => `<span>${l} <b>${r.scores[k].toFixed(1)}</b></span>`).join("");
@@ -172,8 +235,9 @@
       <div class="top3">${q.map(({ p, price }) => `<div class="pl"><div class="meal">${esc(p.meals)}</div>
         <div class="price">${yen(price)}<small>/ night</small></div>
         <div class="one">${esc(roomLine(p))}</div><div class="one">${esc(dinnerLine(p))}</div></div>`).join("")}</div>
-      ${touch ? '<button class="btn" data-open>All plans &amp; booking</button>' : '<div class="hint">Click the pin for all plans and booking links</div>'}`;
+      ${touch ? '<button class="btn" data-open>All plans &amp; booking</button>' : '<div class="hint">Click a photo to enlarge · click the card or pin for all plans and booking links</div>'}`;
     card.hidden = false;
+    card.onclick = touch ? null : (e) => { if (!e.target.closest("img[data-ph]")) { hideCardNow(); openPanel(r); } };
     if (touch) {
       card.querySelector("[data-close]").onclick = hideCardNow;
       card.querySelector("[data-open]").onclick = () => { hideCardNow(); openPanel(r); };
@@ -188,29 +252,39 @@
     const y = Math.min(Math.max(10, pt.y - h / 2), vh - h - 10);
     card.style.left = x + "px"; card.style.top = Math.max(10, y) + "px";
   }
-  function hideCard() { clearTimeout(hideTimer); hideTimer = setTimeout(hideCardNow, 80); }
-  function hideCardNow() { card.hidden = true; }
+  function hideCard(delay = 150) { clearTimeout(hideTimer); hideTimer = setTimeout(hideCardNow, delay); }
+  function hideCardNow() { clearTimeout(hideTimer); card.hidden = true; }
+  // Keep the desktop card open while the pointer is on it, so its photos can be clicked.
+  card.addEventListener("mouseenter", () => clearTimeout(hideTimer));
+  card.addEventListener("mouseleave", () => { if (!card.classList.contains("touch")) hideCard(); });
 
   // Side panel
   const panel = $("panel");
-  function openPanel(r) {
+  // `fromHash`: restoring state from the URL, so don't write a new history entry.
+  function openPanel(r, fromHash) {
     activeId = r.id;
     renderPanel(r);
     panel.hidden = false;
     panel.scrollTop = 0;
     apply();
+    if (!fromHash) writeHash(true); // pushState, so Back closes the panel
   }
-  function closePanel() { panel.hidden = true; activeId = null; apply(); }
+  function closePanel(fromHash) {
+    panel.hidden = true; activeId = null; apply();
+    if (!fromHash) scheduleHash();
+  }
   function renderPanel(r) {
     const ph = ["main", "bath", "room", "food"].map((k) => r.photos && r.photos[k]).filter(Boolean);
     const plans = [...(r.plans || [])].sort((a, b) => Math.min(...a.avg.map((v) => v ?? 1e9)) - Math.min(...b.avg.map((v) => v ?? 1e9)));
     const qualifies = (p) => (!state.twoMeals || p.meals === "Breakfast & dinner") && planPrice(p) != null;
     const nq = plans.filter(qualifies).length;
     $("panel-body").innerHTML = `
-      ${ph.length ? `<div class="gallery${ph.length === 1 ? " n1" : ""}" style="grid-template-rows:repeat(${Math.max(1, ph.length - 1)},1fr)">${ph.map((u, i) => `<img loading="lazy" src="${esc(photo(u, i ? "pictL" : "pict2L"))}" alt="">`).join("")}</div>` : ""}
+      ${ph.length ? `<div class="gallery${ph.length === 1 ? " n1" : ""}" style="grid-template-rows:repeat(${Math.max(1, ph.length - 1)},1fr)">${ph.map((u, i) => thumb(r, u, i ? "pictL" : "pict2L")).join("")}</div>` : ""}
       ${headHtml(r)}
+      ${matchesFilters(r) ? "" : '<div class="note">This property does not match the current filters.</div>'}
       <div class="links"><a class="btn" href="${jalanUrl(r)}" target="_blank" rel="noopener">Jalan page</a>
-        <a class="btn light" href="https://www.google.com/maps/search/?api=1&query=${r.lat},${r.lng}" target="_blank" rel="noopener">Google Maps</a></div>
+        <a class="btn light" href="https://www.google.com/maps/search/?api=1&query=${r.lat},${r.lng}" target="_blank" rel="noopener">Google Maps</a>
+        <button class="btn light" data-copy>Copy link</button></div>
       ${pricesHtml(r)}
       <div class="kv"><b>${esc(r.setting)}:</b> ${esc(r.settingNote || "")}</div>
       ${r.onsen ? `<div class="kv"><b>Onsen:</b> ${esc(r.onsen)}</div>` : ""}
@@ -230,7 +304,7 @@
     const priceCell = (v) => `<td class="${v == null ? "" : v <= state.budget ? "ok" : "over"}">${yen(v)}</td>`;
     return `<div class="plan${ok ? "" : " off"}"><div class="pname">${esc(p.name || "Plan")}</div>
       <div class="facts"><div class="meal">${esc(p.meals)}</div>${facts.map(([k, v]) => `<div><span class="muted">${k}:</span> ${esc(v)}</div>`).join("")}</div>
-      ${p.photo ? `<img loading="lazy" src="${esc(photo(p.photo))}" alt="">` : "<div></div>"}
+      ${p.photo ? thumb(r, p.photo) : "<div></div>"}
       <table><tr><th>Night</th>${NIGHTS.map((n) => `<th>${n}</th>`).join("")}</tr>
         <tr><td>Price</td>${(p.prices || []).map((v) => `<td>${yen(v)}</td>`).join("")}</tr>
         <tr><th>Avg / night</th>${RANGES.map(([l]) => `<th>${l}</th>`).join("")}</tr>
@@ -238,6 +312,73 @@
       <div class="foot"><span class="muted">${p.cancel ? `Free cancellation until ${esc(p.cancel)}` : ""}${p.oneNight ? " · 1-night limit" : ""}</span>
         <a class="btn" href="${bookUrl(r, p)}" target="_blank" rel="noopener">Prices &amp; booking</a></div></div>`;
   }
+
+  // Lightbox: every photo of one ryokan (its 4 photos, then plan room photos, deduplicated).
+  const lb = $("lightbox"), lbImg = $("lb-img");
+  let lbItems = [], lbIdx = 0, lbRid = null, touchX = null, touchY = null;
+  const PHOTO_LABELS = { main: "Main", bath: "Bath", room: "Room", food: "Food" };
+  function galleryItems(r) {
+    const items = [], seen = new Set();
+    const add = (u, label) => { const k = photoKey(u); if (!seen.has(k)) { seen.add(k); items.push({ u, k, label }); } };
+    for (const [k, label] of Object.entries(PHOTO_LABELS)) if (r.photos && r.photos[k]) add(r.photos[k], label);
+    for (const p of r.plans || []) if (p.photo) add(p.photo, `Room: ${roomLine(p) || p.room || p.name || ""}`);
+    return items;
+  }
+  function openLightbox(r, key, index) {
+    lbItems = galleryItems(r);
+    if (!lbItems.length) return;
+    lbRid = r.id;
+    lbIdx = index != null ? Math.min(Math.max(0, index), lbItems.length - 1) : Math.max(0, lbItems.findIndex((it) => it.k === key));
+    $("lb-title").textContent = r.name;
+    lb.hidden = false;
+    document.body.classList.add("lb-open");
+    showLightbox();
+  }
+  function closeLightbox() { lb.hidden = true; document.body.classList.remove("lb-open"); lbImg.removeAttribute("src"); scheduleHash(); }
+  function showLightbox() {
+    const i = lbIdx, it = lbItems[i];
+    // Show the (usually cached) small version at once, then swap in the 1200px one; fall back to 600px if that fails.
+    lbImg.src = photo(it.u, "pictL");
+    lbImg.classList.add("loading");
+    const sizes = ["pict4L", "pict2L"];
+    const tryNext = () => {
+      const size = sizes.shift();
+      if (!size) { if (i === lbIdx) lbImg.classList.remove("loading"); return; }
+      const big = new Image();
+      big.onload = () => { if (i === lbIdx) { lbImg.src = big.src; lbImg.classList.remove("loading"); } };
+      big.onerror = tryNext;
+      big.src = photo(it.u, size);
+    };
+    tryNext();
+    $("lb-cap").textContent = it.label;
+    $("lb-count").textContent = `${i + 1} / ${lbItems.length}`;
+    lb.classList.toggle("single", lbItems.length < 2);
+    for (const d of [-1, 1]) if (lbItems.length > 1) new Image().src = photo(lbItems[(i + d + lbItems.length) % lbItems.length].u, "pict4L");
+    scheduleHash();
+  }
+  function stepLightbox(d) {
+    if (lbItems.length < 2) return;
+    lbIdx = (lbIdx + d + lbItems.length) % lbItems.length;
+    showLightbox();
+  }
+  document.addEventListener("click", (e) => {
+    const img = e.target.closest && e.target.closest("img[data-ph]");
+    if (!img || lb.contains(img)) return;
+    const r = DATA.find((x) => x.id === img.dataset.rid);
+    if (r) { e.preventDefault(); e.stopPropagation(); openLightbox(r, img.dataset.ph); }
+  }, true);
+  lb.addEventListener("click", (e) => {
+    const act = e.target.closest("[data-lb]");
+    if (act) { const a = act.dataset.lb; if (a === "close") closeLightbox(); else stepLightbox(a === "next" ? 1 : -1); return; }
+    if (e.target === lb || e.target.classList.contains("lb-stage")) closeLightbox();
+  });
+  lb.addEventListener("touchstart", (e) => { touchX = e.touches[0].clientX; touchY = e.touches[0].clientY; }, { passive: true });
+  lb.addEventListener("touchend", (e) => {
+    if (touchX == null) return;
+    const dx = e.changedTouches[0].clientX - touchX, dy = e.changedTouches[0].clientY - touchY;
+    touchX = null;
+    if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy)) stepLightbox(dx < 0 ? 1 : -1);
+  });
 
   // Filters
   function renderLegend() {
@@ -267,7 +408,87 @@
     $("pref").value = s.pref; $("q").value = s.q; $("colorby").value = s.colorBy;
   }
   let timer = 0;
-  const onChange = () => { readControls(); clearTimeout(timer); timer = setTimeout(apply, 16); };
+  const onChange = () => { readControls(); clearTimeout(timer); timer = setTimeout(() => { apply(); scheduleHash(); }, 16); };
+
+  // Shareable URL state: #map=<zoom>/<lat>/<lng>&r=<yadNo>&photo=<index> plus any non-default filters.
+  let hashTimer = 0, lastHash = null;
+  function hashString() {
+    const c = map.getCenter(), parts = [`map=${map.getZoom()}/${c.lat.toFixed(5)}/${c.lng.toFixed(5)}`];
+    const rid = activeId || (!lb.hidden ? lbRid : null);
+    if (rid) parts.push(`r=${rid}`);
+    if (rid && !lb.hidden && lbRid === rid) parts.push(`photo=${lbIdx}`);
+    if (state.budget !== DEFAULTS.budget) parts.push(`budget=${state.budget}`);
+    if (state.range !== "any") parts.push(`dates=${RANGES[Number(state.range)][0]}`);
+    if (state.twoMeals) parts.push("meals=2");
+    if (state.rating > DEFAULTS.rating) parts.push(`minr=${state.rating}`);
+    if (state.settings.size !== DEFAULTS.settings.length) parts.push(`setting=${[...state.settings].map(encodeURIComponent).join(",")}`);
+    if (state.pref) parts.push(`pref=${encodeURIComponent(state.pref)}`);
+    if (state.q) parts.push(`q=${encodeURIComponent(state.q)}`);
+    if (state.colorBy !== DEFAULTS.colorBy) parts.push(`color=${state.colorBy}`);
+    return parts.join("&");
+  }
+  function writeHash(push) {
+    clearTimeout(hashTimer);
+    const h = hashString();
+    if (!push && h === lastHash) return;
+    lastHash = h;
+    try { history[push ? "pushState" : "replaceState"]({ ryokanMap: 1 }, "", "#" + h); } catch { location.replace("#" + h); }
+  }
+  function scheduleHash() { clearTimeout(hashTimer); hashTimer = setTimeout(() => writeHash(false), 300); }
+  // Restore from the URL: filters first, then the view, then the panel and lightbox; unknown or invalid
+  // values fall back to defaults. `panelOnly` (Back/Forward between this page's own entries) only opens or
+  // closes the panel and lightbox, keeping the current filters and view.
+  function applyHash(initial, panelOnly) {
+    const h = location.hash.replace(/^#/, "");
+    if (!initial && h === lastHash) return;
+    clearTimeout(hashTimer);
+    const P = new URLSearchParams(h), s = { ...DEFAULTS };
+    if (panelOnly) {
+      const r = DATA.find((x) => x.id === P.get("r") && x.lat != null);
+      if (r) openPanel(r, true); else if (!panel.hidden) closePanel(true);
+      const ph = parseInt(P.get("photo"), 10);
+      if (r && Number.isInteger(ph)) openLightbox(r, null, ph); else if (!lb.hidden) closeLightbox();
+      writeHash(false);
+      return;
+    }
+    if (Number(P.get("budget")) > 0) s.budget = Number(P.get("budget"));
+    const d = RANGES.findIndex(([l]) => l === P.get("dates"));
+    if (d >= 0) s.range = String(d);
+    s.twoMeals = P.get("meals") === "2";
+    if (Number(P.get("minr")) > 0) s.rating = Number(P.get("minr"));
+    if (P.has("setting")) s.settings = P.get("setting").split(",").filter((x) => SETTING[x]);
+    if (prefs.includes(P.get("pref"))) s.pref = P.get("pref");
+    s.q = P.get("q") || "";
+    if (P.get("color") === "price") s.colorBy = "price";
+    writeControls(s);
+    readControls();
+    const r = DATA.find((x) => x.id === P.get("r") && x.lat != null);
+    activeId = r ? r.id : null;
+    apply();
+    const v = (P.get("map") || "").split("/").map(Number);
+    if (v.length === 3 && v.every(Number.isFinite)) map.setView([v[1], v[2]], v[0], { animate: false });
+    else if (initial && markers.length) map.fitBounds(L.latLngBounds(markers.map((m) => m.getLatLng())).pad(0.05));
+    if (r) openPanel(r, true); else if (!panel.hidden) closePanel(true);
+    const ph = parseInt(P.get("photo"), 10);
+    if (r && Number.isInteger(ph)) openLightbox(r, null, ph); else if (!lb.hidden) closeLightbox();
+    writeHash(false);
+  }
+  async function copyLink(btn) {
+    writeHash(false);
+    const url = location.href;
+    let ok = false;
+    try { await navigator.clipboard.writeText(url); ok = true; } catch {
+      const ta = Object.assign(document.createElement("textarea"), { value: url });
+      ta.style.cssText = "position:fixed;top:0;opacity:0";
+      document.body.appendChild(ta); ta.select();
+      try { ok = document.execCommand("copy"); } catch { ok = false; }
+      ta.remove();
+    }
+    if (!ok) { window.prompt("Copy this link:", url); return; }
+    const old = btn.textContent;
+    btn.textContent = "Copied";
+    setTimeout(() => { btn.textContent = old; }, 1500);
+  }
 
   const prefs = [...new Set(DATA.map((r) => r.pref))].sort();
   $("pref").innerHTML += prefs.map((p) => `<option>${esc(p)}</option>`).join("");
@@ -279,16 +500,27 @@
     $("filters-toggle").textContent = c ? "+" : "–";
     $("filters-toggle").setAttribute("aria-expanded", String(!c));
   };
-  $("panel-close").onclick = closePanel;
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape") { hideCardNow(); if (!panel.hidden) closePanel(); } });
+  $("panel-close").onclick = () => closePanel();
+  document.addEventListener("click", (e) => { const b = e.target.closest && e.target.closest("[data-copy]"); if (b) copyLink(b); });
+  document.addEventListener("keydown", (e) => {
+    if (!lb.hidden) {
+      if (e.key === "Escape") closeLightbox();
+      else if (e.key === "ArrowRight") stepLightbox(1);
+      else if (e.key === "ArrowLeft") stepLightbox(-1);
+      else return;
+      e.preventDefault();
+      return;
+    }
+    if (e.key === "Escape") { hideCardNow(); if (!panel.hidden) closePanel(); }
+  });
   map.on("click zoomstart movestart", hideCardNow);
+  map.on("moveend", scheduleHash);
+  window.addEventListener("hashchange", () => applyHash(false));
+  window.addEventListener("popstate", (e) => applyHash(false, !!(e.state && e.state.ryokanMap)));
   if (TOUCH && window.innerWidth < 640) { $("filters").classList.add("collapsed"); $("filters-toggle").textContent = "+"; }
 
   $("total").textContent = DATA.length;
   const missing = DATA.length - located.length;
   if (missing) $("nocoords").textContent = `(${missing} without coordinates)`;
-  writeControls(DEFAULTS); // ignore values the browser restores into the form on reload
-  readControls();
-  apply();
-  if (markers.length) map.fitBounds(L.latLngBounds(markers.map((m) => m.getLatLng())).pad(0.05));
+  applyHash(true); // also overrides values the browser restores into the form on reload
 })();
