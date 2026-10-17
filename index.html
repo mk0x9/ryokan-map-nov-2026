@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Onsen ryokan shortlist · Nov 16-19 2026</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" crossorigin="">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="map"></div>
+
+<aside id="filters" class="box">
+  <div class="filters-head">
+    <h1>Onsen ryokan · Nov 16-19</h1>
+    <button id="filters-toggle" class="icon-btn" title="Show or hide filters" aria-expanded="true">–</button>
+  </div>
+  <div id="filters-body">
+    <p class="count"><b id="count">0</b> of <span id="total">0</span> ryokan shown <span id="nocoords" class="muted"></span></p>
+    <label class="row">Budget <b id="budget-val"></b><span class="muted">/ night avg, 2 adults</span></label>
+    <input id="budget" type="range" min="15000" max="60000" step="1000" value="40000">
+    <label class="row" for="rating">Min rating <b id="rating-val"></b></label>
+    <input id="rating" type="range" min="3" max="5" step="0.1" value="3">
+    <div class="row">Dates</div>
+    <div class="seg" id="range">
+      <label><input type="radio" name="range" value="any" checked><span>Any</span></label>
+      <label><input type="radio" name="range" value="0"><span>16-18</span></label>
+      <label><input type="radio" name="range" value="1"><span>17-19</span></label>
+      <label><input type="radio" name="range" value="2"><span>16-19</span></label>
+    </div>
+    <label class="check"><input id="twomeals" type="checkbox"> Breakfast &amp; dinner only</label>
+    <div class="row">Setting</div>
+    <div class="chips" id="settings">
+      <label class="chip s-onsen"><input type="checkbox" value="Onsen town" checked><span>Onsen town</span></label>
+      <label class="chip s-remote"><input type="checkbox" value="Remote" checked><span>Remote</span></label>
+      <label class="chip s-town"><input type="checkbox" value="Town" checked><span>Town</span></label>
+    </div>
+    <div class="two">
+      <label>Prefecture<select id="pref"><option value="">All</option></select></label>
+      <label>Color pins by<select id="colorby"><option value="setting">Setting</option><option value="price">Price</option></select></label>
+    </div>
+    <input id="q" type="search" placeholder="Search name or area">
+    <div id="legend" class="legend"></div>
+    <button id="reset" class="link-btn">Reset filters</button>
+  </div>
+</aside>
+
+<div id="card" class="card" hidden></div>
+<aside id="panel" class="panel" hidden>
+  <button id="panel-close" class="icon-btn close" title="Close">×</button>
+  <div id="panel-body"></div>
+</aside>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js" crossorigin=""></script>
+<script src="data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
