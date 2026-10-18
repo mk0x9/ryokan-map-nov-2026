@@ -1,6 +1,6 @@
 # Onsen ryokan map, Nov 16-19 2026
 
-Static map of onsen ryokan in Kanto, Chubu and Kansai with plans for 2 adults, collected from jalan.net on 2026-10-17 and 2026-10-18.
+Static map of onsen ryokan in Kanto, Chubu, Kansai, Chugoku and Shikoku with plans for 2 adults, collected from jalan.net between 2026-10-17 and 2026-10-18.
 Pins show the cheapest in-budget average price per night and the Jalan rating; hover for photos and details, click for all plans and booking links, click a photo for the gallery.
 The URL hash keeps the map view, open property and filters, so links can be shared.
 
