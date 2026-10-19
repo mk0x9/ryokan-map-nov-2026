@@ -80,6 +80,8 @@
   // Map
   const map = (window.ryokanMap = L.map("map", { zoomControl: false, maxZoom: 19 }).setView([36.3, 138.6], 7));
   L.control.zoom({ position: "bottomright" }).addTo(map);
+  // Starred pins live in their own pane, stacked above the marker pane that holds clusters and regular pins.
+  map.createPane("stars").style.zIndex = 640;
   // Base maps. Default: OpenTopoMap (raster, local-language labels). "Topo": GSI's English topographic tiles (Japan, zoom 5-11), handing over to the
   // OpenFreeMap vector map (MapLibre GL, labels switched to English) outside that zoom range.
   // tile.openstreetmap.org refuses requests without a Referer (what a file:// page sends), so from disk the
@@ -106,7 +108,9 @@
   const DEFAULT_BASE = "otm";
   // The layer switcher only holds empty marker layers; syncBase() decides which real layer is shown.
   const baseTokens = Object.fromEntries(BASES.map(([k]) => [k, Object.assign(L.layerGroup(), { baseKey: k })]));
-  L.control.layers(Object.fromEntries(BASES.map(([k, label]) => [label, baseTokens[k]])), null, { position: "bottomright" }).addTo(map);
+  const starToken = L.layerGroup();
+  L.control.layers(Object.fromEntries(BASES.map(([k, label]) => [label, baseTokens[k]])), { "★ Starred": starToken },
+    { position: "bottomright" }).addTo(map);
   let baseKey = DEFAULT_BASE, shownBase = null, vector = null, vectorState = "pending", vectorOk = false, vectorWatch = 0;
   baseTokens[baseKey].addTo(map);
 
@@ -260,7 +264,8 @@
 
   const located = DATA.filter((r) => r.lat != null && r.lng != null);
   const makeMarker = (r) => {
-    const m = L.marker([r.lat, r.lng], { riseOnHover: true, keyboard: false, title: "", zIndexOffset: r.starred ? STAR_Z : 0 });
+    const m = L.marker([r.lat, r.lng], { riseOnHover: true, keyboard: false, title: "",
+      pane: r.starred ? "stars" : "markerPane", zIndexOffset: r.starred ? STAR_Z : 0 });
     m.ryokan = r;
     if (TOUCH) {
       m.on("click", () => showCard(r, m, true));
@@ -315,6 +320,7 @@
       stars.addLayer(m);
       if (state.starred) ns++;
     }
+    if (state.starred !== map.hasLayer(starToken)) state.starred ? starToken.addTo(map) : map.removeLayer(starToken);
     $("count").textContent = n;
     $("starcount").textContent = ns ? ` + ${ns} starred` : "";
     renderLegend();
@@ -558,6 +564,15 @@
     if (t && t.id === "starredonly" && t.checked) $("showstarred").checked = true;
     if (t && t.id === "showstarred" && !t.checked) $("starredonly").checked = false;
     readControls(); clearTimeout(timer); timer = setTimeout(() => { apply(); scheduleHash(); }, 16); };
+
+  // The layer switcher's "★ Starred" overlay mirrors the "Show starred" checkbox.
+  const setShowStarred = (on) => {
+    if ($("showstarred").checked === on) return;
+    $("showstarred").checked = on;
+    $("showstarred").dispatchEvent(new Event("change", { bubbles: true }));
+  };
+  map.on("overlayadd", (e) => { if (e.layer === starToken) setShowStarred(true); });
+  map.on("overlayremove", (e) => { if (e.layer === starToken) setShowStarred(false); });
 
   // Shareable URL state: #map=<zoom>/<lat>/<lng>&r=<yadNo>&photo=<index> plus any non-default filters
   // (starred=0 hides the starred pins, starred=only hides all others).
