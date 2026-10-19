@@ -18,7 +18,7 @@
     <button id="filters-toggle" class="icon-btn" title="Show or hide filters" aria-expanded="true">–</button>
   </div>
   <div id="filters-body">
-    <p class="count"><b id="count">0</b> of <span id="total">0</span> ryokan shown <span id="nocoords" class="muted"></span></p>
+    <p class="count"><b id="count">0</b> of <span id="total">0</span><span id="starcount"></span> ryokan shown <span id="nocoords" class="muted"></span></p>
     <label class="row">Budget <b id="budget-val"></b><span class="muted">/ night avg, 2 adults</span></label>
     <input id="budget" type="range" min="15000" max="60000" step="1000" value="40000">
     <label class="row" for="rating">Min rating <b id="rating-val"></b></label>
@@ -31,6 +31,8 @@
       <label><input type="radio" name="range" value="2"><span>16-19</span></label>
     </div>
     <label class="check"><input id="twomeals" type="checkbox"> Breakfast &amp; dinner only</label>
+    <div class="checks"><label class="check"><input id="showstarred" type="checkbox" checked> Show <span class="lg-star">★</span> starred</label>
+      <label class="check"><input id="starredonly" type="checkbox"> Starred only</label></div>
     <div class="row">Setting</div>
     <div class="chips" id="settings">
       <label class="chip s-onsen"><input type="checkbox" value="Onsen town" checked><span>Onsen town</span></label>

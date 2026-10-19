@@ -1,5 +1,6 @@
 # Build map/data.js (window.RYOKANS = [...]) from work/build_sheet.build() rows + work/data/coords.json.
 # Run: python3 map/build_data.py
+# Starred properties (work/data/starred.json) get "starred": true; their plans include over-budget ones, all kept.
 import contextlib, io, json, os, re, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -47,6 +48,7 @@ def main():
         r_rows, p_rows = bs.build()
     RH, PH = bs.RYOKAN_HEADERS, bs.PLAN_HEADERS
     coords = json.load(open(f"{WORK}/data/coords.json")) if os.path.exists(f"{WORK}/data/coords.json") else {}
+    starred_ids = set(json.load(open(f"{WORK}/data/starred.json"))["ids"]) if os.path.exists(f"{WORK}/data/starred.json") else set()
 
     plans = {}
     for row in p_rows:
@@ -80,7 +82,7 @@ def main():
         two = [cheapest(i, "Breakfast & dinner") for i in range(3)]
         two = [v for v in two if v is not None]
         out.append(compact({
-            "id": rid, "name": r["Ryokan"], "nameJp": r["Name (Japanese)"], "pref": r["Prefecture"],
+            "id": rid, "starred": r.get("Starred") == "★" or rid in starred_ids or None, "name": r["Ryokan"], "nameJp": r["Name (Japanese)"], "pref": r["Prefecture"],
             "area": r["Area (Jalan)"], "setting": r["Setting"], "settingNote": trim(r["Setting note"]),
             "lat": c[0] if c else None, "lng": c[1] if c else None,
             "photos": compact({k: img(r[h]) for k, h in

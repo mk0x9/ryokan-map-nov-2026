@@ -2,7 +2,7 @@
   --ink: #1f2937; --muted: #6b7280; --line: #e5e7eb; --bg: #ffffff; --soft: #f6f7f9;
   --onsen: #c2410c; --remote: #0f766e; --town: #4f46e5;
   --p1: #15803d; --p2: #65a30d; --p3: #ca8a04; --p4: #b91c1c;
-  --accent: #b45309;
+  --accent: #b45309; --star: #f59e0b;
   font: 13px/1.4 system-ui, -apple-system, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif;
   color: var(--ink);
 }
@@ -31,6 +31,9 @@ input[type=range] { width: 100%; margin: 4px 0 0; accent-color: var(--accent); }
 .seg label:first-child span { border-left: 0; }
 .seg input:checked + span { background: var(--ink); color: #fff; }
 .check { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
+.checks { display: flex; gap: 14px; flex-wrap: wrap; }
+.lg-star { color: #b45309; font-weight: 600; }
+.star-badge { display: inline-block; vertical-align: 2px; padding: 1px 7px; border-radius: 999px; background: var(--star); color: #3b1d00; font-size: 11px; font-weight: 700; }
 .chips { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 4px; }
 .chip input { display: none; }
 .chip span { display: inline-block; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line); cursor: pointer; color: var(--muted); }
@@ -57,7 +60,11 @@ input[type=search] { width: 100%; box-sizing: border-box; margin-top: 8px; }
 .pin::after { content: ""; position: absolute; left: 50%; bottom: -6px; margin-left: -5px; border: 5px solid transparent; border-bottom: 0; border-top-color: inherit; }
 .pin.active, .pin:hover { z-index: 1000; transform: translate(-50%, -6px) scale(1.12); box-shadow: 0 2px 8px rgba(0,0,0,.45); }
 .pin .r { font-weight: 500; opacity: .9; }
-.leaflet-marker-icon:hover { z-index: 10000 !important; }
+.leaflet-marker-icon:hover { z-index: 100000 !important; }
+/* Starred pins: amber with a star; pale when no plan fits the budget and dates ("from" price). */
+.pin.star { background: var(--star); color: #3b1d00; border-color: #fff; border-top-color: var(--star); font-size: 12.5px; }
+.pin.star.muted { background: #fef3c7; color: #92400e; border-color: var(--star); font-weight: 600; }
+.pin.star.forced { opacity: .75; }
 
 /* Clusters */
 .cl-wrap { background: none; }
@@ -92,10 +99,14 @@ ul.pts li { margin: 1px 0; }
 .prices small { display: block; color: var(--muted); font-size: 10.5px; }
 .prices b { font-size: 12.5px; }
 .prices .none b { color: #9ca3af; font-weight: 500; }
+.prices .over { background: #fef2f2; }
+.prices .over b { color: var(--p4); font-weight: 600; }
+.prices .over small:last-child { color: var(--p4); }
 .top3 { margin-top: 8px; border-top: 1px solid var(--line); }
 .top3 .pl { display: grid; grid-template-columns: 1fr auto; gap: 0 8px; padding: 5px 0; border-bottom: 1px solid var(--line); }
 .top3 .pl .price { font-weight: 700; grid-row: span 3; align-self: center; text-align: right; }
 .top3 .pl .price small { display: block; font-weight: 400; color: var(--muted); font-size: 10.5px; }
+.top3 .pl.over .price, .top3 .pl.over .price small { color: var(--p4); }
 .one { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
 .meal { font-weight: 600; }
 .hint { margin-top: 6px; color: var(--muted); font-size: 11.5px; }
@@ -124,6 +135,8 @@ ul.pts li { margin: 1px 0; }
 .plan th:first-child, .plan td:first-child { text-align: left; }
 .plan td.ok { color: var(--p1); font-weight: 700; }
 .plan td.over { color: var(--muted); }
+.plan.over-budget { border-color: #fecaca; }
+.tag-over { display: inline-block; vertical-align: 1px; padding: 0 6px; border-radius: 999px; background: #fee2e2; color: var(--p4); font-size: 11px; font-weight: 700; }
 .plan .foot { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12px; }
 .plans-head { display: flex; justify-content: space-between; align-items: baseline; }
 

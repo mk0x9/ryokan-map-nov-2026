@@ -9,7 +9,9 @@
   const BANDS = [[25000, "var(--p1)", "≤ ¥25k"], [32000, "var(--p2)", "¥25-32k"], [40000, "var(--p3)", "¥32-40k"], [Infinity, "var(--p4)", "> ¥40k"]];
   const SCORES = [["room", "Room"], ["bath", "Bath"], ["breakfast", "Breakfast"], ["dinner", "Dinner"], ["service", "Service"], ["clean", "Clean"]];
   const TOUCH = window.matchMedia("(hover: none)").matches;
-  const DEFAULTS = { budget: 40000, rating: 3, range: "any", twoMeals: false, settings: ["Onsen town", "Remote", "Town"], pref: "", q: "", colorBy: "setting" };
+  const DEFAULTS = { budget: 40000, rating: 3, range: "any", twoMeals: false, settings: ["Onsen town", "Remote", "Town"], pref: "", q: "", colorBy: "setting",
+    starred: true, starredOnly: false };
+  const STAR_Z = 10000; // starred pins sit above the clustered ones
 
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -34,27 +36,33 @@
   const state = { ...DEFAULTS, settings: new Set(DEFAULTS.settings) };
   const rangeIdx = () => (state.range === "any" ? [0, 1, 2] : [Number(state.range)]);
 
-  // Cheapest in-budget average for one plan over the selected ranges.
+  // Cheapest in-budget average for one plan over the selected ranges (budget Infinity: cheapest at any price).
   function planPrice(p, idx = rangeIdx(), budget = state.budget) {
     let best = null;
     for (const i of idx) { const a = p.avg[i]; if (a != null && a <= budget && (best == null || a < best)) best = a; }
     return best;
   }
-  function qualifyingPlans(r) {
+  function qualifyingPlans(r, budget = state.budget) {
     return (r.plans || [])
       .filter((p) => !state.twoMeals || p.meals === "Breakfast & dinner")
-      .map((p) => ({ p, price: planPrice(p) }))
+      .map((p) => ({ p, price: planPrice(p, rangeIdx(), budget) }))
       .filter((x) => x.price != null)
       .sort((a, b) => a.price - b.price);
   }
-  function cheapestFor(r, i, meals) {
+  function cheapestFor(r, i, meals, budget = state.budget) {
     let best = null;
     for (const p of r.plans || []) {
       if (meals && p.meals !== meals) continue;
-      const a = planPrice(p, i == null ? [0, 1, 2] : [i]);
+      const a = planPrice(p, i == null ? [0, 1, 2] : [i], budget);
       if (a != null && (best == null || a < best)) best = a;
     }
     return best;
+  }
+  // Starred pins show a price even when no plan fits: the cheapest for the selected dates and meals
+  // regardless of budget, else for any dates and meals.
+  function fromPrice(r) {
+    const q = qualifyingPlans(r, Infinity);
+    return q.length ? q[0].price : cheapestFor(r, null, null, Infinity);
   }
   function passes(r) {
     if (!state.settings.has(r.setting)) return false;
@@ -247,9 +255,12 @@
   });
   map.addLayer(clusters);
 
+  // Starred properties have their own layer, straight on the map: never clustered, never filtered out.
+  const stars = L.layerGroup().addTo(map);
+
   const located = DATA.filter((r) => r.lat != null && r.lng != null);
-  const markers = located.map((r) => {
-    const m = L.marker([r.lat, r.lng], { riseOnHover: true, keyboard: false, title: "" });
+  const makeMarker = (r) => {
+    const m = L.marker([r.lat, r.lng], { riseOnHover: true, keyboard: false, title: "", zIndexOffset: r.starred ? STAR_Z : 0 });
     m.ryokan = r;
     if (TOUCH) {
       m.on("click", () => showCard(r, m, true));
@@ -259,15 +270,24 @@
       m.on("click", () => { hideCard(); openPanel(r); });
     }
     return m;
-  });
+  };
+  const markers = located.filter((r) => !r.starred).map(makeMarker);
+  const starMarkers = located.filter((r) => r.starred).map(makeMarker);
 
   let activeId = null;
   // `forced`: the open property is shown (greyed) even when the filters exclude it, e.g. from a shared link.
+  const ratingHtml = (r) => (r.rating ? ` <span class="r">· ${r.rating.toFixed(1)}</span>` : "");
   function pinIcon(r, price, forced) {
-    const label = `${price != null ? yenK(price) : "—"}${r.rating ? ` <span class="r">· ${r.rating.toFixed(1)}</span>` : ""}`;
+    const label = `${price != null ? yenK(price) : "—"}${ratingHtml(r)}`;
     const color = forced ? "#6b7280" : pinColor(r, price);
     return L.divIcon({ className: "pin-wrap", iconSize: [0, 0], iconAnchor: [0, 0],
       html: `<div class="pin${r.id === activeId ? " active" : ""}${forced ? " forced" : ""}" style="background:${color};border-top-color:${color}">${label}</div>` });
+  }
+  // `muted`: no plan fits the budget and dates, so `price` is the cheapest "from" price.
+  function starIcon(r, price, muted, forced) {
+    const label = `★ ${muted && price != null ? "from " : ""}${price != null ? yenK(price) : "—"}${ratingHtml(r)}`;
+    return L.divIcon({ className: "pin-wrap", iconSize: [0, 0], iconAnchor: [0, 0],
+      html: `<div class="pin star${muted ? " muted" : ""}${r.id === activeId ? " active" : ""}${forced ? " forced" : ""}">${label}</div>` });
   }
   const matchesFilters = (r) => passes(r) && qualifyingPlans(r).length > 0;
   const anyPrice = (r) => { const v = (r.plans || []).flatMap((p) => p.avg).filter((x) => x != null); return v.length ? Math.min(...v) : null; };
@@ -277,14 +297,26 @@
     let n = 0;
     for (const m of markers) {
       const r = m.ryokan;
-      const q = passes(r) ? qualifyingPlans(r) : [];
+      const q = !state.starredOnly && passes(r) ? qualifyingPlans(r) : [];
       m.options.price = q.length ? q[0].price : null;
       if (q.length) { m.setIcon(pinIcon(r, q[0].price)); visible.push(m); n++; }
       else if (r.id === activeId) { m.setIcon(pinIcon(r, anyPrice(r), true)); visible.push(m); }
     }
     clusters.clearLayers();
     clusters.addLayers(visible);
+    // Starred pins ignore the filters; hidden ones still show while open.
+    let ns = 0;
+    stars.clearLayers();
+    for (const m of starMarkers) {
+      const r = m.ryokan;
+      if (!state.starred && r.id !== activeId) continue;
+      const q = qualifyingPlans(r);
+      m.setIcon(starIcon(r, q.length ? q[0].price : fromPrice(r), !q.length, !state.starred));
+      stars.addLayer(m);
+      if (state.starred) ns++;
+    }
     $("count").textContent = n;
+    $("starcount").textContent = ns ? ` + ${ns} starred` : "";
     renderLegend();
     if (activeId) { const r = DATA.find((x) => x.id === activeId); if (r) renderPanel(r); }
   }
@@ -306,14 +338,20 @@
     return `<span class="badge b-${s.cls}">${esc(r.setting)}</span>`;
   }
   function headHtml(r) {
-    return `<h2>${esc(r.name)}</h2><div class="jp">${esc(r.nameJp)} · ${esc(r.area)}, ${esc(r.pref)}</div>
+    return `<h2>${esc(r.name)}${r.starred ? ' <span class="star-badge" title="Hand-picked">★ Starred</span>' : ""}</h2><div class="jp">${esc(r.nameJp)} · ${esc(r.area)}, ${esc(r.pref)}</div>
       <div class="badges"><span class="stars">★ ${r.rating ? r.rating.toFixed(1) : "—"}</span>
       <span class="muted">${r.reviews ? r.reviews.toLocaleString("en-US") + " reviews" : ""}</span>${badgeHtml(r)}</div>${scoresHtml(r)}`;
   }
+  // Cheapest in-budget price per range; when nothing fits the budget, the cheapest over-budget one, marked as such.
   function pricesHtml(r) {
-    const cells = RANGES.map(([l], i) => [l, cheapestFor(r, i)]);
-    cells.push(["2 meals", cheapestFor(r, null, "Breakfast & dinner")]);
-    return `<div class="prices">${cells.map(([l, v]) => `<div class="${v == null ? "none" : ""}"><small>${l}</small><b>${yen(v)}</b></div>`).join("")}</div>`;
+    const cell = (l, i, meals) => {
+      const v = cheapestFor(r, i, meals);
+      return v != null ? [l, v, false] : [l, cheapestFor(r, i, meals, Infinity), true];
+    };
+    const cells = RANGES.map(([l], i) => cell(l, i));
+    cells.push(cell("2 meals", null, "Breakfast & dinner"));
+    return `<div class="prices">${cells.map(([l, v, over]) => (v == null ? `<div class="none"><small>${l}</small><b>—</b></div>`
+      : `<div class="${over ? "over" : ""}"><small>${l}</small><b>${yen(v)}</b>${over ? "<small>over budget</small>" : ""}</div>`)).join("")}</div>`;
   }
   function roomLine(p) {
     return [p.roomStyle, p.size, p.bedding, p.bath && p.bath !== "none" ? `bath: ${p.bath}` : null, p.view].filter(Boolean).join(" · ") || p.room || "";
@@ -324,7 +362,9 @@
   }
   function showCard(r, m, touch) {
     clearTimeout(hideTimer);
-    const q = qualifyingPlans(r).slice(0, 3);
+    // Nothing fits (e.g. a starred property): list the cheapest plans anyway, marked over budget.
+    let q = qualifyingPlans(r).slice(0, 3), over = false;
+    if (!q.length) { q = qualifyingPlans(r, Infinity).slice(0, 3); over = q.length > 0; }
     card.className = "card" + (touch ? " touch" : "");
     card.innerHTML = `${touch ? '<button class="icon-btn close" style="float:right" data-close>×</button>' : ""}${headHtml(r)}${photosHtml(r, 4)}
       ${r.setting ? `<div class="kv"><b>${esc(r.setting)}:</b> ${esc(r.settingNote || "")}</div>` : ""}
@@ -332,8 +372,8 @@
       ${r.strong && r.strong.length ? `<ul class="pts">${r.strong.slice(0, 4).map((s) => `<li>${esc(s)}</li>`).join("")}</ul>` : ""}
       ${r.watch ? `<div class="kv watch"><b>Watch-outs:</b> ${esc(r.watch)}</div>` : ""}
       ${pricesHtml(r)}
-      <div class="top3">${q.map(({ p, price }) => `<div class="pl"><div class="meal">${esc(p.meals)}</div>
-        <div class="price">${yen(price)}<small>/ night</small></div>
+      <div class="top3">${q.map(({ p, price }) => `<div class="pl${over ? " over" : ""}"><div class="meal">${esc(p.meals)}</div>
+        <div class="price">${yen(price)}<small>${over ? "over budget" : "/ night"}</small></div>
         <div class="one">${esc(roomLine(p))}</div><div class="one">${esc(dinnerLine(p))}</div></div>`).join("")}</div>
       ${touch ? '<button class="btn" data-open>All plans &amp; booking</button>' : '<div class="hint">Click a photo to enlarge · click the card or pin for all plans and booking links</div>'}`;
     card.hidden = false;
@@ -381,7 +421,7 @@
     $("panel-body").innerHTML = `
       ${ph.length ? `<div class="gallery${ph.length === 1 ? " n1" : ""}" style="grid-template-rows:repeat(${Math.max(1, ph.length - 1)},1fr)">${ph.map((u, i) => thumb(r, u, i ? "pictL" : "pict2L")).join("")}</div>` : ""}
       ${headHtml(r)}
-      ${matchesFilters(r) ? "" : '<div class="note">This property does not match the current filters.</div>'}
+      ${matchesFilters(r) ? "" : `<div class="note">${r.starred ? "Starred, so always shown, but it" : "This property"} does not match the current filters.</div>`}
       <div class="links"><a class="btn" href="${jalanUrl(r)}" target="_blank" rel="noopener">Jalan page</a>
         <a class="btn light" href="https://www.google.com/maps/search/?api=1&query=${r.lat},${r.lng}" target="_blank" rel="noopener">Google Maps</a>
         <button class="btn light" data-copy>Copy link</button></div>
@@ -402,7 +442,8 @@
       ["Balcony", p.balcony], ["In-room bath", p.bath], ["Dinner", dinnerLine(p)],
     ].filter(([, v]) => v);
     const priceCell = (v) => `<td class="${v == null ? "" : v <= state.budget ? "ok" : "over"}">${yen(v)}</td>`;
-    return `<div class="plan${ok ? "" : " off"}"><div class="pname">${esc(p.name || "Plan")}</div>
+    const over = planPrice(p) == null && planPrice(p, rangeIdx(), Infinity) != null; // priced for the dates, but above the budget
+    return `<div class="plan${ok ? "" : " off"}${over ? " over-budget" : ""}"><div class="pname">${over ? '<span class="tag-over">Over budget</span> ' : ""}${esc(p.name || "Plan")}</div>
       <div class="facts"><div class="meal">${esc(p.meals)}</div>${facts.map(([k, v]) => `<div><span class="muted">${k}:</span> ${esc(v)}</div>`).join("")}</div>
       ${p.photo ? thumb(r, p.photo) : "<div></div>"}
       <table><tr><th>Night</th>${NIGHTS.map((n) => `<th>${n}</th>`).join("")}</tr>
@@ -484,7 +525,7 @@
   function renderLegend() {
     const items = state.colorBy === "price" ? BANDS.map(([, c, l]) => [c, l]) : Object.entries(SETTING).map(([l, s]) => [s.color, l]);
     $("legend").innerHTML = items.map(([c, l]) => `<span><i style="background:${c}"></i>${l}</span>`).join("") +
-      "<span>Pin: cheapest avg / night · rating</span>";
+      (state.starred ? '<span class="lg-star">★ Starred</span>' : "") + "<span>Pin: cheapest avg / night · rating</span>";
   }
   function syncLabels() {
     $("budget-val").textContent = yen(state.budget);
@@ -499,6 +540,8 @@
     state.pref = $("pref").value;
     state.q = $("q").value.trim();
     state.colorBy = $("colorby").value;
+    state.starred = $("showstarred").checked;
+    state.starredOnly = $("starredonly").checked;
     syncLabels();
   }
   function writeControls(s) {
@@ -506,11 +549,18 @@
     document.querySelector(`input[name=range][value="${s.range}"]`).checked = true;
     document.querySelectorAll("#settings input").forEach((i) => { i.checked = s.settings.includes(i.value); });
     $("pref").value = s.pref; $("q").value = s.q; $("colorby").value = s.colorBy;
+    $("showstarred").checked = s.starred; $("starredonly").checked = s.starredOnly;
   }
   let timer = 0;
-  const onChange = () => { readControls(); clearTimeout(timer); timer = setTimeout(() => { apply(); scheduleHash(); }, 16); };
+  const onChange = (e) => {
+    // "Starred only" implies showing them; hiding them turns "Starred only" off.
+    const t = e && e.target;
+    if (t && t.id === "starredonly" && t.checked) $("showstarred").checked = true;
+    if (t && t.id === "showstarred" && !t.checked) $("starredonly").checked = false;
+    readControls(); clearTimeout(timer); timer = setTimeout(() => { apply(); scheduleHash(); }, 16); };
 
-  // Shareable URL state: #map=<zoom>/<lat>/<lng>&r=<yadNo>&photo=<index> plus any non-default filters.
+  // Shareable URL state: #map=<zoom>/<lat>/<lng>&r=<yadNo>&photo=<index> plus any non-default filters
+  // (starred=0 hides the starred pins, starred=only hides all others).
   let hashTimer = 0, lastHash = null;
   function hashString() {
     const c = map.getCenter(), parts = [`map=${map.getZoom()}/${c.lat.toFixed(5)}/${c.lng.toFixed(5)}`];
@@ -525,6 +575,8 @@
     if (state.pref) parts.push(`pref=${encodeURIComponent(state.pref)}`);
     if (state.q) parts.push(`q=${encodeURIComponent(state.q)}`);
     if (state.colorBy !== DEFAULTS.colorBy) parts.push(`color=${state.colorBy}`);
+    if (!state.starred) parts.push("starred=0");
+    else if (state.starredOnly) parts.push("starred=only");
     if (baseKey !== DEFAULT_BASE) parts.push(`base=${baseKey}`);
     return parts.join("&");
   }
@@ -561,6 +613,8 @@
     if (prefs.includes(P.get("pref"))) s.pref = P.get("pref");
     s.q = P.get("q") || "";
     if (P.get("color") === "price") s.colorBy = "price";
+    s.starred = P.get("starred") !== "0";
+    s.starredOnly = P.get("starred") === "only";
     writeControls(s);
     readControls();
     setBase(baseTokens[P.get("base")] ? P.get("base") : DEFAULT_BASE);
@@ -569,7 +623,7 @@
     apply();
     const v = (P.get("map") || "").split("/").map(Number);
     if (v.length === 3 && v.every(Number.isFinite)) map.setView([v[1], v[2]], v[0], { animate: false });
-    else if (initial && markers.length) map.fitBounds(L.latLngBounds(markers.map((m) => m.getLatLng())).pad(0.05));
+    else if (initial && located.length) map.fitBounds(L.latLngBounds(located.map((r) => [r.lat, r.lng])).pad(0.05));
     if (r) openPanel(r, true); else if (!panel.hidden) closePanel(true);
     const ph = parseInt(P.get("photo"), 10);
     if (r && Number.isInteger(ph)) openLightbox(r, null, ph); else if (!lb.hidden) closeLightbox();
@@ -621,7 +675,7 @@
   window.addEventListener("popstate", (e) => applyHash(false, !!(e.state && e.state.ryokanMap)));
   if (TOUCH && window.innerWidth < 640) { $("filters").classList.add("collapsed"); $("filters-toggle").textContent = "+"; }
 
-  $("total").textContent = DATA.length;
+  $("total").textContent = DATA.filter((r) => !r.starred).length;
   const missing = DATA.length - located.length;
   if (missing) $("nocoords").textContent = `(${missing} without coordinates)`;
   applyHash(true); // also overrides values the browser restores into the form on reload
