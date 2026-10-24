@@ -8,7 +8,7 @@ WORK = f"{ROOT}/work"
 sys.path.insert(0, WORK)
 import build_sheet as bs  # noqa: E402
 
-BUDGET = 40000
+BUDGET = 60000
 RANGES = {"16-18": ("16", "17"), "17-19": ("17", "18"), "16-19": ("16", "17", "18")}
 SKIP = {"", "unknown", "not stated"}
 IMG_BASE = "https://cdn.jalan.jp/jalan/images/"  # stripped from photo URLs to keep data.js small

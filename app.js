@@ -6,10 +6,10 @@
   const NIGHTS = ["Nov 16", "Nov 17", "Nov 18"];
   const SETTING = { "Onsen town": { cls: "onsen", color: "var(--onsen)" }, Remote: { cls: "remote", color: "var(--remote)" },
     Town: { cls: "town", color: "var(--town)" } };
-  const BANDS = [[25000, "var(--p1)", "≤ ¥25k"], [32000, "var(--p2)", "¥25-32k"], [40000, "var(--p3)", "¥32-40k"], [Infinity, "var(--p4)", "> ¥40k"]];
+  const BANDS = [[30000, "var(--p1)", "≤ ¥30k"], [45000, "var(--p2)", "¥30-45k"], [60000, "var(--p3)", "¥45-60k"], [Infinity, "var(--p4)", "> ¥60k"]];
   const SCORES = [["room", "Room"], ["bath", "Bath"], ["breakfast", "Breakfast"], ["dinner", "Dinner"], ["service", "Service"], ["clean", "Clean"]];
   const TOUCH = window.matchMedia("(hover: none)").matches;
-  const DEFAULTS = { budget: 40000, rating: 3, range: "any", twoMeals: false, settings: ["Onsen town", "Remote", "Town"], pref: "", q: "", colorBy: "setting",
+  const DEFAULTS = { budget: 60000, rating: 3, range: "any", twoMeals: false, settings: ["Onsen town", "Remote", "Town"], pref: "", q: "", colorBy: "setting",
     starred: true, starredOnly: false };
   const STAR_Z = 10000; // starred pins sit above the clustered ones
 
